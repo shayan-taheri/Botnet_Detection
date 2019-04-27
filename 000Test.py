@@ -3,7 +3,7 @@ Code to visualize noise of all adversarial algorithm.
 """
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
 import numpy as np
 import keras
@@ -86,7 +86,7 @@ to_categorical = tf.keras.utils.to_categorical
 
 y_train = to_categorical(y_train)
 
-VALIDATION_SPLIT = 0.3
+VALIDATION_SPLIT = 0.25
 n = int(X_train.shape[0] * (1-VALIDATION_SPLIT))
 X_test = X_train[n:]
 X_train = X_train[:n]
@@ -393,7 +393,7 @@ def pgd_func(image, eps=5000, epochs=2000):
 
 print('\nTraining')
 
-train(sess, env, X_train, y_train, load=False, epochs=5,
+train(sess, env, X_train, y_train, load=False, epochs=10,
       name='biometric')
 
 X_adv_fgsm = np.zeros(X_test.shape)
@@ -402,7 +402,7 @@ X_adv_deepfool = np.zeros(X_test.shape)
 X_adv_cw = np.zeros(X_test.shape)
 X_adv_pgd = np.zeros(X_test.shape)
 
-for i in range(200):
+for i in range(150):
 
     xorg_ini, y0 = X_test[i], y_test[i]
 

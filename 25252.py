@@ -1,64 +1,3 @@
-"""
-Code to visualize noise of all adversarial algorithm.
-"""
-import os
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-
-import numpy as np
-import keras
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from timeit import default_timer
-import tensorflow as tf
-import cv2
-import glob
-from attacks import fgm, jsma, deepfool, cw
-
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-img_size = 128
-img_chan = 3
-n_classes = 5
-batch_size = 1
-
-class Timer(object):
-    def __init__(self, msg='Starting.....', timer=default_timer, factor=1,
-                 fmt="------- elapsed {:.4f}s --------"):
-        self.timer = timer
-        self.factor = factor
-        self.fmt = fmt
-        self.end = None
-        self.msg = msg
-    def __call__(self):
-        """
-        Return the current time
-        """
-        return self.timer()
-    def __enter__(self):
-        """
-        Set the start time
-        """
-        print(self.msg)
-        self.start = self()
-        return self
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        """
-        Set the end time
-        """
-        self.end = self()
-        print(str(self))
-    def __repr__(self):
-        return self.fmt.format(self.elapsed)
-    @property
-    def elapsed(self):
-        if self.end is None:
-            # if elapsed is called in the context manager scope
-            return (self() - self.start) * self.factor
-        else:
-            # if elapsed is called out of the context manager scope
-            return (self.end - self.start) * self.factor
 
 print('\nLoading Biometric')
 
@@ -85,13 +24,6 @@ X_train = X_train.astype(np.float32) / 255
 to_categorical = tf.keras.utils.to_categorical
 
 y_train = to_categorical(y_train)
-
-VALIDATION_SPLIT = 0.3
-n = int(X_train.shape[0] * (1-VALIDATION_SPLIT))
-X_test = X_train[n:]
-X_train = X_train[:n]
-y_test = y_train[n:]
-y_train = y_train[:n]
 
 print('\nConstruction graph')
 
@@ -127,7 +59,7 @@ def model(x, logits=False, training=False):
     with tf.variable_scope("fc2"):
         z = tf.contrib.layers.fully_connected(z, num_outputs=256, activation_fn=tf.nn.relu)
 
-    logitsO = tf.layers.dense(z, units=5, name='logits')
+    logitsO = tf.layers.dense(z, units=4, name='logits')
     y = tf.nn.softmax(logitsO, name='ybar')
 
     if logits:
@@ -289,6 +221,7 @@ def predict(sess, env, X_data, batch_size=128):
         end = min(n_sample, start + batch_size)
         y_batch = sess.run(env.ybar, feed_dict={env.x: X_data[start:end]})
         yval[start:end] = y_batch
+    print()
     return yval
 
 def make_fgsm(sess, env, X_data, epochs=2000, eps=5000, batch_size=128):
@@ -393,18 +326,18 @@ def pgd_func(image, eps=5000, epochs=2000):
 
 print('\nTraining')
 
-train(sess, env, X_train, y_train, load=False, epochs=5,
+train(sess, env, X_train, y_train, load=False, epochs=20,
       name='biometric')
 
-X_adv_fgsm = np.zeros(X_test.shape)
-X_adv_jsma = np.zeros(X_test.shape)
-X_adv_deepfool = np.zeros(X_test.shape)
-X_adv_cw = np.zeros(X_test.shape)
-X_adv_pgd = np.zeros(X_test.shape)
+X_adv_fgsm = np.zeros(X_train.shape)
+X_adv_jsma = np.zeros(X_train.shape)
+X_adv_deepfool = np.zeros(X_train.shape)
+X_adv_cw = np.zeros(X_train.shape)
+X_adv_pgd = np.zeros(X_train.shape)
 
-for i in range(200):
+for i in range(len(X_train)):
 
-    xorg_ini, y0 = X_test[i], y_test[i]
+    xorg_ini, y0 = X_train[i], y_train[i]
 
     xorg = np.expand_dims(xorg_ini, axis=0)
 
@@ -419,22 +352,54 @@ for i in range(200):
     X_adv_cw[i] = xadvs[3]
     X_adv_pgd[i] = np.expand_dims(pgd_func(image=xorg_ini, eps=5000, epochs=2000), axis=0)
 
-print('\nEvaluating on FGSM adversarial data')
+    print('\nEvaluating on Single FGSM adversarial data')
 
-evaluate(sess, env, X_adv_fgsm, y_test)
+    fgsm_loss, fgsm_acc = evaluate(sess, env, xadvs[0], y_train)
 
-print('\nEvaluating on JSMA adversarial data')
+    print('\nEvaluating on Single JSMA adversarial data')
 
-evaluate(sess, env, X_adv_jsma, y_test)
+    jsma_loss, jsma_acc = evaluate(sess, env, xadvs[1], y_train)
 
-print('\nEvaluating on DeepFool adversarial data')
+    print('\nEvaluating on Single DeepFool adversarial data')
 
-evaluate(sess, env, X_adv_deepfool, y_test)
+    deep_loss, deep_acc = evaluate(sess, env, xadvs[2], y_train)
 
-print('\nEvaluating on CW adversarial data')
+    print('\nEvaluating on Single CW adversarial data')
 
-evaluate(sess, env, X_adv_cw, y_test)
+    cw_loss, cw_acc = evaluate(sess, env, xadvs[3], y_train)
 
-print('\nEvaluating on PGD adversarial data')
+    print('\nEvaluating on Single PGD adversarial data')
 
-evaluate(sess, env, X_adv_pgd, y_test)
+    pgd_loss, pgd_acc = evaluate(sess, env, np.expand_dims(pgd_func(image=xorg_ini, eps=5000, epochs=2000), axis=0), y_train)
+
+    xorg = np.squeeze(xorg, axis=0)
+    xadvs = [xorg] + xadvs
+    xadvs = [np.squeeze(e) for e in xadvs]
+
+    print('\nSaving figure')
+
+    fig = plt.figure()
+    plt.imshow(xadvs[0])
+    plt.savefig('/home/shayan/Biometric_Attacked/xadvs_fgsm_' + str(i) + '_' + str(fgsm_acc) + '.png')
+    plt.close(fig)
+
+    fig = plt.figure()
+    plt.imshow(xadvs[1])
+    plt.savefig('/home/shayan/Biometric_Attacked/xadvs_jsma_' + str(i) + '_' + str(jsma_acc) + '.png')
+    plt.close(fig)
+
+    fig = plt.figure()
+    plt.imshow(xadvs[2])
+    plt.savefig('/home/shayan/Biometric_Attacked/xadvs_deepfool_' + str(i) + '_' + str(deep_acc) + '.png')
+    plt.close(fig)
+
+    fig = plt.figure()
+    plt.imshow(xadvs[3])
+    plt.savefig('/home/shayan/Biometric_Attacked/xadvs_cw_' + str(i) + '_' + str(cw_acc) + '.png')
+    plt.close(fig)
+
+    fig = plt.figure()
+    plt.imshow(xadvs[4])
+    plt.savefig('/home/shayan/Biometric_Attacked/xadvs_pgd_' + str(i) + '_' + str(pgd_acc) + '.png')
+    plt.close(fig)
+

@@ -1,11 +1,17 @@
-"""Test ImageNet pretrained DenseNet"""
-
 import os
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import tensorflow as tf
-
+'''
+for d in ['/gpu:0']:
+  with tf.device(d):
+    a = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[2, 3], name='a')
+    b = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2], name='b')
+    c = tf.matmul(a, b)
+with tf.Session() as sess:
+    print(sess.run(c))
+'''
 import cv2
 import numpy as np
 import keras
@@ -15,6 +21,7 @@ import glob
 import matplotlib.pyplot as plt
 import sklearn.metrics as sklm
 import itertools
+
 
 # We only test DenseNet-121 in this script for demo purpose
 from densenet169 import DenseNet
@@ -105,7 +112,17 @@ print('Start Reading Data')
 X_train = []
 Y_train = []
 
-### ***************** LOADING DATASETS *******************
+for i1 in range(1,12):
+    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Normal/Train/' + str(i1) + '/*.png'):
+        im=cv2.imread(filename)
+        X_train.append(im)
+        Y_train.append([1])
+
+for i2 in range(1,11):
+    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Botnet/Train/' + str(i2) + '/*.png'):
+        im=cv2.imread(filename)
+        X_train.append(im)
+        Y_train.append([0])
 
 XX_train = np.array(X_train)
 YY_train = np.array(Y_train)

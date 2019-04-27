@@ -1,276 +1,439 @@
-"""Test ImageNet pretrained DenseNet"""
-
+"""
+Code to visualize noise of all adversarial algorithm.
+"""
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
-import cv2
 import numpy as np
 import keras
-from keras.optimizers import SGD
-import keras.backend as K
-import glob
+import matplotlib
 import matplotlib.pyplot as plt
-import sklearn.metrics as sklm
-import itertools
-from keras.utils import Sequence
+import matplotlib.gridspec as gridspec
+from timeit import default_timer
+import tensorflow as tf
+import cv2
+import glob
+from attacks import fgm, jsma, deepfool, cw
 
-# We only test DenseNet-121 in this script for demo purpose
-from densenet169 import DenseNet
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-def plot_confusion_matrix(cm, classes,
-                          normalize=False,
-                          title='Confusion matrix',
-                          cmap=plt.cm.Blues):
-    """
-    This function prints and plots the confusion matrix.
-    Normalization can be applied by setting `normalize=True`.
-    """
-    if normalize:
-        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        print("Normalized confusion matrix")
-    else:
-        print('Confusion matrix, without normalization')
+img_size = 128
+img_chan = 3
+n_classes = 4
+batch_size = 1
 
-    print(cm)
+class Timer(object):
+    def __init__(self, msg='Starting.....', timer=default_timer, factor=1,
+                 fmt="------- elapsed {:.4f}s --------"):
+        self.timer = timer
+        self.factor = factor
+        self.fmt = fmt
+        self.end = None
+        self.msg = msg
+    def __call__(self):
+        """
+        Return the current time
+        """
+        return self.timer()
+    def __enter__(self):
+        """
+        Set the start time
+        """
+        print(self.msg)
+        self.start = self()
+        return self
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        """
+        Set the end time
+        """
+        self.end = self()
+        print(str(self))
+    def __repr__(self):
+        return self.fmt.format(self.elapsed)
+    @property
+    def elapsed(self):
+        if self.end is None:
+            # if elapsed is called in the context manager scope
+            return (self() - self.start) * self.factor
+        else:
+            # if elapsed is called out of the context manager scope
+            return (self.end - self.start) * self.factor
 
-    plt.imshow(cm, interpolation='nearest', cmap=cmap)
-    plt.title(title)
-    plt.colorbar()
-    tick_marks = np.arange(len(classes))
-    plt.xticks(tick_marks, classes, rotation=45)
-    plt.yticks(tick_marks, classes)
+print('\nLoading Biometric')
 
-    fmt = '.2f' if normalize else 'd'
-    thresh = cm.max() / 2.
-    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
-        plt.text(j, i, format(cm[i, j], fmt),
-                 horizontalalignment="center",
-                 color="white" if cm[i, j] > thresh else "black")
-
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label')
-    plt.tight_layout()
-
-classes=2
-
-# Use pre-trained weights for Tensorflow backend
-weights_path = 'imagenet_models/densenet169_weights_tf.h5'
-
-print('Start Reading Data')
-
-# "0" = Botnet Traffic Data and "1" = Normal Traffic Data
 X_train = []
 Y_train = []
 
-for i1 in range(0,12):
-    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Normal/Train/' + str(i1) + '/*.png'):
-        im=cv2.imread(filename)
-        X_train.append(im)
-        Y_train.append([1])
-
-for i2 in range(0,11):
-    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Botnet/Train/' + str(i2) + '/*.png'):
-        im=cv2.imread(filename)
-        X_train.append(im)
-        Y_train.append([0])
-
-for i3 in range(0,12):
-    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Normal/Test/' + str(i3) + '/*.png'):
-        im=cv2.imread(filename)
-        X_train.append(im)
-        Y_train.append([1])
-
-for i4 in range(0,11):
-    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Botnet/Test/' + str(i4) + '/*.png'):
-        im=cv2.imread(filename)
-        X_train.append(im)
-        Y_train.append([0])
+### ***************** LOADING DATASETS *******************
 
 print('Finish Reading Data')
 
-print('\nSpliting data')
+y_train = Y_train
 
-import random
+X_train0 = []
 
-c = list(zip(X_train, Y_train))
-random.shuffle(c)
-X_train, Y_train = zip(*c)
+for ix in range(0,len(X_train)):
+    im = X_train[ix]
+    im = cv2.resize(im, (img_size, img_size))
+    X_train0.append(im)
 
-VALIDATION_SPLIT = 0.1
-n = int(len(X_train) * (1-VALIDATION_SPLIT))
-X_valid = X_train[n:]
+X_train = np.array(X_train0)
+
+X_train = X_train.astype(np.float32) / 255
+
+to_categorical = tf.keras.utils.to_categorical
+
+y_train = to_categorical(y_train)
+
+VALIDATION_SPLIT = 0.3
+n = int(X_train.shape[0] * (1-VALIDATION_SPLIT))
+X_test = X_train[n:]
 X_train = X_train[:n]
-Y_valid = Y_train[n:]
-Y_train = Y_train[:n]
+y_test = y_train[n:]
+y_train = y_train[:n]
 
-from keras.utils import to_categorical
+print('\nConstruction graph')
 
-Y_train = np.array(Y_train)
-Y_train = to_categorical(Y_train)
+def model(x, logits=False, training=False):
 
-Y_valid = np.array(Y_valid)
-Y_valid = to_categorical(Y_valid)
+    with tf.variable_scope('conv0'):
+        z = tf.layers.conv2d(x, filters=64, kernel_size=[3, 3],
+                             padding='same', activation=tf.nn.relu)
 
-class MY_Generator(Sequence):
+    with tf.variable_scope('conv1'):
+        z = tf.layers.conv2d(z, filters=64, kernel_size=[3, 3],
+                             padding='same', activation=tf.nn.relu)
 
-    def __init__(self, image_data, labels, batch_size):
-        self.image_data, self.labels = image_data, labels
-        self.batch_size = batch_size
+    z = tf.layers.max_pooling2d(z, pool_size=[2, 2], strides=2)
 
-    def __len__(self):
-        return np.ceil(len(self.image_data) / float(self.batch_size))
+    with tf.variable_scope('conv2'):
+        z = tf.layers.conv2d(z, filters=128, kernel_size=[3, 3],
+                             padding='same', activation=tf.nn.relu)
 
-    def __getitem__(self, idx):
-        batch_x = self.image_data[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch_y = self.labels[idx * self.batch_size:(idx + 1) * self.batch_size]
+    with tf.variable_scope('conv3'):
+        z = tf.layers.conv2d(z, filters=128, kernel_size=[3, 3],
+                                 padding='same', activation=tf.nn.relu)
 
-        arr_batch_x = np.array([cv2.resize(ity, (224, 224)).astype(np.float32) for ity in batch_x])
+    z = tf.layers.max_pooling2d(z, pool_size=[2, 2], strides=2)
 
-        for ix in range(0, arr_batch_x.shape[0]):
-            im = arr_batch_x[ix]
-            im[:, :, 0] = (im[:, :, 0] - 103.94) * 0.017
-            im[:, :, 1] = (im[:, :, 1] - 116.78) * 0.017
-            im[:, :, 2] = (im[:, :, 2] - 123.68) * 0.017
-            arr_batch_x[ix] = im
+    with tf.variable_scope('flatten'):
+        shape = z.get_shape().as_list()
+        z = tf.reshape(z, [-1, np.prod(shape[1:])])
 
-        return arr_batch_x, batch_y
+    with tf.variable_scope("fc1"):
+        z = tf.contrib.layers.fully_connected(z, num_outputs=256, activation_fn=tf.nn.relu)
 
-batch_size = 16
+    with tf.variable_scope("fc2"):
+        z = tf.contrib.layers.fully_connected(z, num_outputs=256, activation_fn=tf.nn.relu)
 
-my_training_batch_generator = MY_Generator(X_train, Y_train, batch_size)
-my_validation_batch_generator = MY_Generator(X_valid, Y_valid, batch_size)
+    logitsO = tf.layers.dense(z, units=4, name='logits')
+    y = tf.nn.softmax(logitsO, name='ybar')
 
-del X_train
-del Y_train
-del X_valid
-del Y_valid
-
-print('Start Processing Test Data')
-
-X_test = []
-Y_test = []
-
-for i3 in range(0, 12):
-    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Normal/Test/' + str(i3) + '/*.png'):
-        im = cv2.imread(filename)
-        im = cv2.resize(im, (224, 224)).astype(np.float32)
-        # Subtract mean pixel and multiple by scaling constant
-        # Reference: https://github.com/shicai/DenseNet-Caffe
-        im[:, :, 0] = (im[:, :, 0] - 103.94) * 0.017
-        im[:, :, 1] = (im[:, :, 1] - 116.78) * 0.017
-        im[:, :, 2] = (im[:, :, 2] - 123.68) * 0.017
-        X_test.append(im)
-        Y_test.append([1])
-
-for i4 in range(0, 11):
-    for filename in glob.glob('/home/shayan/PycharmProjects/Dataset/Botnet/Test/' + str(i4) + '/*.png'):
-        im = cv2.imread(filename)
-        im = cv2.resize(im, (224, 224)).astype(np.float32)
-        # Subtract mean pixel and multiple by scaling constant
-        # Reference: https://github.com/shicai/DenseNet-Caffe
-        im[:, :, 0] = (im[:, :, 0] - 103.94) * 0.017
-        im[:, :, 1] = (im[:, :, 1] - 116.78) * 0.017
-        im[:, :, 2] = (im[:, :, 2] - 123.68) * 0.017
-        X_test.append(im)
-        Y_test.append([0])
-
-X_test = np.array(X_test)
-Y_test = np.array(Y_test)
-Y_test = to_categorical(Y_test)
-
-NumNonTrainable = [10,75,200,525]
-
-for ib in range(0,len(NumNonTrainable)):
-
-    # Test pretrained model
-    model = DenseNet(reduction=0.5, classes=classes, weights_path=weights_path, NumNonTrainable=NumNonTrainable[ib])
-
-    # Learning rate is changed to 1e-3
-    sgd = SGD(lr=1e-2, decay=1e-6, momentum=0.9, nesterov=True)
-    model.compile(optimizer=sgd, loss='categorical_crossentropy', metrics=['accuracy'])
-
-    model.fit_generator(generator=my_training_batch_generator,
-                          epochs=3,
-                          verbose=1,
-                          shuffle=True,
-                          validation_data=my_validation_batch_generator)
-
-    f = open("/home/shayan/PycharmProjects/DenseNet-Keras-master/results/Stat_Results_NontTrainable_" + str(ib) + ".txt", "w")
-
-    score = model.evaluate(X_test, Y_test, verbose=0)
-
-    f.write(str(['Test loss: ', score[0]]))
-    f.write('\n')
-
-    f.write(str(['Test accuracy: ', score[1]]))
-    f.write('\n')
-
-    confusion = []
-    precision = []
-    recall = []
-    f1s = []
-    kappa = []
-    auc = []
-    roc = []
-
-    scores = np.asarray(model.predict(X_test))
-    predict = np.round(np.asarray(model.predict(X_test)))
-    targ = Y_test
-
-    auc.append(sklm.roc_auc_score(targ.flatten(), scores.flatten()))
-    confusion.append(sklm.confusion_matrix(targ.flatten(), predict.flatten()))
-    precision.append(sklm.precision_score(targ.flatten(), predict.flatten()))
-    recall.append(sklm.recall_score(targ.flatten(), predict.flatten()))
-    f1s.append(sklm.f1_score(targ.flatten(), predict.flatten()))
-    kappa.append(sklm.cohen_kappa_score(targ.flatten(), predict.flatten()))
+    if logits:
+        return y, logitsO
+    return y
 
 
-    f.write(str(['Area Under ROC Curve (AUC): ', auc]))
-    f.write('\n')
-    f.write('Confusion: ')
-    f.write('\n')
-    f.write(str(np.array(confusion)))
-    f.write('\n')
-    f.write(str(['Precision: ', precision]))
-    f.write('\n')
-    f.write(str(['Recall: ', recall]))
-    f.write('\n')
-    f.write(str(['F-1 Score: ', f1s]))
-    f.write('\n')
-    f.write(str(['Kappa: ', kappa]))
-    f.close()
+class Dummy:
+    pass
 
-    confusion = np.array(confusion)
 
-    # Plot non-normalized confusion matrix
-    fig1 = plt.figure()
-    plot_confusion_matrix(confusion[0], classes=['Botnet', 'Normal'],
-                          title='Confusion Matrix (Without Normalization)')
+env = Dummy()
 
-    fig1.savefig("/home/shayan/PycharmProjects/DenseNet-Keras-master/results/CM_NoNorm_NonTrainable_" + str(ib) + ".pdf")
-    fig1.savefig("/home/shayan/PycharmProjects/DenseNet-Keras-master/results/CM_NoNorm_NonTrainable_" + str(ib) + ".eps")
-    plt.close(fig1)
 
-    # Plot normalized confusion matrix
-    fig2 = plt.figure()
-    plot_confusion_matrix(confusion[0], classes=['Botnet', 'Normal'], normalize=True,
-                          title='Normalized Confusion Matrix')
+with tf.variable_scope('model'):
+    env.x = tf.placeholder(tf.float32, (None, img_size, img_size, img_chan),
+                           name='x')
 
-    fig2.savefig("/home/shayan/PycharmProjects/DenseNet-Keras-master/results/CM_Norm_NonTrainable_" + str(ib) + ".pdf")
-    fig2.savefig("/home/shayan/PycharmProjects/DenseNet-Keras-master/results/CM_Norm_NonTrainable_" + str(ib) + ".eps")
+    env.y = tf.placeholder(tf.float32, (None, n_classes), name='y')
 
-    del model
-    del sgd
-    del score
-    del confusion
-    del precision
-    del recall
-    del f1s
-    del kappa
-    del auc
-    del roc
-    del scores
-    del predict
-    del targ
+    env.training = tf.placeholder_with_default(False, (), name='mode')
 
+    env.ybar, logitsO = model(env.x, logits=True, training=env.training)
+
+    env.xs = tf.Variable(np.zeros((1, 128, 128, 3), dtype=np.float32),
+                                    name='modifier')
+
+    env.orig_xs = tf.placeholder(tf.float32, [None, 128, 128, 3])
+
+    env.ys = tf.placeholder(tf.int32, [None])
+
+    with tf.variable_scope('acc'):
+        count = tf.equal(tf.argmax(env.y, axis=1), tf.argmax(env.ybar, axis=1))
+        env.acc = tf.reduce_mean(tf.cast(count, tf.float32), name='acc')
+
+    with tf.variable_scope('loss'):
+        xent = tf.nn.softmax_cross_entropy_with_logits(labels=env.y,
+                                                       logits=logitsO)
+        env.loss = tf.reduce_mean(xent, name='loss')
+
+    with tf.variable_scope('train_op'):
+
+        optimizer = tf.train.AdamOptimizer()
+        env.train_op = optimizer.minimize(env.loss)
+
+    env.x_fixed = tf.placeholder(
+        tf.float32, (batch_size, img_size, img_size, img_chan),
+        name='x_fixed')
+
+    env.saver = tf.train.Saver()
+
+with tf.variable_scope('model', reuse=tf.AUTO_REUSE):
+    env.adv_eps = tf.placeholder(tf.float32, (), name='adv_eps')
+    env.adv_eta = tf.placeholder(tf.float32, (), name='adv_eta')
+    env.adv_epochs = tf.placeholder(tf.int32, (), name='adv_epochs')
+    env.adv_y = tf.placeholder(tf.int32, (), name='adv_y')
+
+    env.x_fgsm = fgm(model, env.x, epochs=env.adv_epochs, eps=env.adv_eps)
+    env.x_deepfool = deepfool(model, env.x, epochs=env.adv_epochs, batch=True)
+    env.x_jsma = jsma(model, env.x, env.adv_y, eps=env.adv_eps,
+                      epochs=env.adv_epochs)
+
+    env.cw_train_op, env.x_cw, env.cw_noise = cw(model, env.x_fixed,
+                                               y=env.adv_y, eps=env.adv_eps,
+                                               optimizer=optimizer)
+
+print('\nInitializing graph')
+
+sess = tf.InteractiveSession()
+sess.run(tf.global_variables_initializer())
+sess.run(tf.local_variables_initializer())
+
+def evaluate(sess, env, X_data, y_data, batch_size=128):
+    """
+    Evaluate TF model by running env.loss and env.acc.
+    """
+    print('\nEvaluating')
+
+    n_sample = X_data.shape[0]
+    n_batch = int((n_sample+batch_size-1) / batch_size)
+    loss, acc = 0, 0
+
+    for batch in range(n_batch):
+        print(' batch {0}/{1}'.format(batch + 1, n_batch))
+        print('\r')
+        start = batch * batch_size
+        end = min(n_sample, start + batch_size)
+        cnt = end - start
+        batch_loss, batch_acc = sess.run(
+            [env.loss, env.acc],
+            feed_dict={env.x: X_data[start:end],
+                       env.y: y_data[start:end]})
+        loss += batch_loss * cnt
+        acc += batch_acc * cnt
+    loss /= n_sample
+    acc /= n_sample
+
+    print(' loss: {0:.4f} acc: {1:.4f}'.format(loss, acc))
+    return loss, acc
+
+
+def train(sess, env, X_data, y_data, X_valid=None, y_valid=None, epochs=1,
+          load=False, shuffle=True, batch_size=128, name='model'):
+    """
+    Train a TF model by running env.train_op.
+    """
+    if load:
+        if not hasattr(env, 'saver'):
+            print('\nError: cannot find saver op')
+            return
+        print('\nLoading saved model')
+        return env.saver.restore(sess, 'model/{}'.format(name))
+
+    print('\nTrain model')
+    n_sample = X_data.shape[0]
+    n_batch = int((n_sample+batch_size-1) / batch_size)
+    for epoch in range(epochs):
+        print('\nEpoch {0}/{1}'.format(epoch + 1, epochs))
+
+        if shuffle:
+            print('\nShuffling data')
+            ind = np.arange(n_sample)
+            np.random.shuffle(ind)
+            X_data = X_data[ind]
+            y_data = y_data[ind]
+
+        for batch in range(n_batch):
+            print(' batch {0}/{1}'.format(batch + 1, n_batch))
+            print('\r')
+            start = batch * batch_size
+            end = min(n_sample, start + batch_size)
+            sess.run(env.train_op, feed_dict={env.x: X_data[start:end],
+                                              env.y: y_data[start:end],
+                                              env.training: True})
+        if X_valid is not None:
+            evaluate(sess, env, X_valid, y_valid)
+
+    if hasattr(env, 'saver'):
+        print('\n Saving model')
+        env.saver.save(sess, 'model/{}'.format(name))
+
+
+def predict(sess, env, X_data, batch_size=128):
+    """
+    Do inference by running env.ybar.
+    """
+    print('\nPredicting')
+    n_classes = env.ybar.get_shape().as_list()[1]
+
+    n_sample = X_data.shape[0]
+    n_batch = int((n_sample+batch_size-1) / batch_size)
+    yval = np.empty((n_sample, n_classes))
+
+    for batch in range(n_batch):
+        print(' batch {0}/{1}'.format(batch + 1, n_batch))
+        print('\r')
+        start = batch * batch_size
+        end = min(n_sample, start + batch_size)
+        y_batch = sess.run(env.ybar, feed_dict={env.x: X_data[start:end]})
+        yval[start:end] = y_batch
+    return yval
+
+def make_fgsm(sess, env, X_data, epochs=2000, eps=5000, batch_size=128):
+    print('\nMaking adversarials via FGSM')
+
+    n_sample = X_data.shape[0]
+    n_batch = int((n_sample + batch_size - 1) / batch_size)
+    X_adv = np.empty_like(X_data)
+
+    for batch in range(n_batch):
+        print(' batch {0}/{1}'.format(batch + 1, n_batch))
+        print('\r')
+        start = batch * batch_size
+        end = min(n_sample, start + batch_size)
+        feed_dict = {env.x: X_data[start:end], env.adv_eps: eps,
+                     env.adv_epochs: epochs}
+        adv = sess.run(env.x_fgsm, feed_dict=feed_dict)
+        X_adv[start:end] = adv
+
+    return X_adv
+
+def make_jsma(sess, env, X_data, epochs=2000, eps=5000, batch_size=128):
+    print('\nMaking adversarials via JSMA')
+
+    n_sample = X_data.shape[0]
+    n_batch = int((n_sample + batch_size - 1) / batch_size)
+    X_adv = np.empty_like(X_data)
+
+    for batch in range(n_batch):
+        print(' batch {0}/{1}'.format(batch + 1, n_batch))
+        print('\r')
+        start = batch * batch_size
+        end = min(n_sample, start + batch_size)
+        feed_dict = {
+            env.x: X_data[start:end],
+            env.adv_y: np.random.choice(n_classes),
+            env.adv_epochs: epochs,
+            env.adv_eps: eps}
+        adv = sess.run(env.x_jsma, feed_dict=feed_dict)
+        X_adv[start:end] = adv
+
+    return X_adv
+
+
+def make_deepfool(sess, env, X_data, epochs=4, batch_size=1, noise=True, batch=True, eta=5000):
+    print('\nMaking adversarials via DeepFool')
+
+    n_sample = X_data.shape[0]
+    n_batch = int((n_sample + batch_size - 1) / batch_size)
+    X_adv = np.empty_like(X_data)
+
+    for batch in range(n_batch):
+        print(' batch {0}/{1}'.format(batch + 1, n_batch))
+        print('\r')
+        start = batch * batch_size
+        end = min(n_sample, start + batch_size)
+        feed_dict = {env.x: X_data[start:end], env.adv_epochs: epochs, env.adv_eta: eta}
+        adv = sess.run(env.x_deepfool, feed_dict=feed_dict)
+        X_adv[start:end] = adv
+
+    return X_adv
+
+def make_cw(sess, env, X_data, epochs=2000, eps=5000, batch_size=1):
+    """
+    Generate adversarial via CW optimization.
+    """
+    print('\nMaking adversarials via CW')
+    n_sample = X_data.shape[0]
+    n_batch = int((n_sample + batch_size - 1) / batch_size)
+    X_adv = np.empty_like(X_data)
+    for batch in range(n_batch):
+        with Timer('Batch {0}/{1}   '.format(batch + 1, n_batch)):
+            end = min(n_sample, (batch+1) * batch_size)
+            start = end - batch_size
+            feed_dict = {
+                env.x_fixed: X_data[start:end],
+                env.adv_eps: eps,
+                env.adv_y: np.random.choice(n_classes)}
+            # reset the noise before every iteration
+            sess.run(env.cw_noise.initializer)
+            for epoch in range(epochs):
+                sess.run(env.cw_train_op, feed_dict=feed_dict)
+            xadv = sess.run(env.x_cw, feed_dict=feed_dict)
+            X_adv[start:end] = xadv
+
+    return X_adv
+
+def pgd_func(image, eps=5000, epochs=2000):
+
+    print('\nMaking adversarials via PGD')
+    backup = image
+    perturbed = image
+    perturbed = perturbed + np.random.uniform(-eps, eps, backup.shape)
+    perturbed = np.clip(perturbed, 0, 255)
+    for _ in range(epochs):
+        gradient = np.gradient(perturbed,axis=2)
+        perturbed += 0.0001 * np.sign(np.array(gradient))
+        perturbed = np.clip(perturbed, backup - eps, backup + eps)
+        perturbed = np.clip(perturbed, 0, 255)
+
+    return perturbed
+
+print('\nTraining')
+
+train(sess, env, X_train, y_train, load=False, epochs=5,
+      name='biometric')
+
+X_adv_fgsm = np.zeros(X_test.shape)
+X_adv_jsma = np.zeros(X_test.shape)
+X_adv_deepfool = np.zeros(X_test.shape)
+X_adv_cw = np.zeros(X_test.shape)
+X_adv_pgd = np.zeros(X_test.shape)
+
+for i in range(200):
+
+    xorg_ini, y0 = X_test[i], y_test[i]
+
+    xorg = np.expand_dims(xorg_ini, axis=0)
+
+    xadvs = [make_fgsm(sess, env, xorg, eps=5000, epochs=2000),
+             make_jsma(sess, env, xorg, eps=5000, epochs=2000),
+             make_deepfool(sess, env, xorg, noise=True, epochs=4),
+             make_cw(sess, env, xorg, eps=5000, epochs=2000)]
+
+    X_adv_fgsm[i] = xadvs[0]
+    X_adv_jsma[i] = xadvs[1]
+    X_adv_deepfool[i] = xadvs[2]
+    X_adv_cw[i] = xadvs[3]
+    X_adv_pgd[i] = np.expand_dims(pgd_func(image=xorg_ini, eps=5000, epochs=2000), axis=0)
+
+print('\nEvaluating on FGSM adversarial data')
+
+evaluate(sess, env, X_adv_fgsm, y_test)
+
+print('\nEvaluating on JSMA adversarial data')
+
+evaluate(sess, env, X_adv_jsma, y_test)
+
+print('\nEvaluating on DeepFool adversarial data')
+
+evaluate(sess, env, X_adv_deepfool, y_test)
+
+print('\nEvaluating on CW adversarial data')
+
+evaluate(sess, env, X_adv_cw, y_test)
+
+print('\nEvaluating on PGD adversarial data')
+
+evaluate(sess, env, X_adv_pgd, y_test)

@@ -3,7 +3,7 @@ Code to visualize noise of all adversarial algorithm.
 """
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 import numpy as np
 import keras
@@ -20,7 +20,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 img_size = 128
 img_chan = 3
-n_classes = 5
+n_classes = 4
 batch_size = 1
 
 class Timer(object):
@@ -86,13 +86,6 @@ to_categorical = tf.keras.utils.to_categorical
 
 y_train = to_categorical(y_train)
 
-VALIDATION_SPLIT = 0.3
-n = int(X_train.shape[0] * (1-VALIDATION_SPLIT))
-X_test = X_train[n:]
-X_train = X_train[:n]
-y_test = y_train[n:]
-y_train = y_train[:n]
-
 print('\nConstruction graph')
 
 def model(x, logits=False, training=False):
@@ -127,7 +120,7 @@ def model(x, logits=False, training=False):
     with tf.variable_scope("fc2"):
         z = tf.contrib.layers.fully_connected(z, num_outputs=256, activation_fn=tf.nn.relu)
 
-    logitsO = tf.layers.dense(z, units=5, name='logits')
+    logitsO = tf.layers.dense(z, units=4, name='logits')
     y = tf.nn.softmax(logitsO, name='ybar')
 
     if logits:
@@ -291,7 +284,7 @@ def predict(sess, env, X_data, batch_size=128):
         yval[start:end] = y_batch
     return yval
 
-def make_fgsm(sess, env, X_data, epochs=2000, eps=5000, batch_size=128):
+def make_fgsm(sess, env, X_data, epochs=4, eps=0.1, batch_size=128):
     print('\nMaking adversarials via FGSM')
 
     n_sample = X_data.shape[0]
@@ -310,7 +303,7 @@ def make_fgsm(sess, env, X_data, epochs=2000, eps=5000, batch_size=128):
 
     return X_adv
 
-def make_jsma(sess, env, X_data, epochs=2000, eps=5000, batch_size=128):
+def make_jsma(sess, env, X_data, epochs=4, eps=10, batch_size=128):
     print('\nMaking adversarials via JSMA')
 
     n_sample = X_data.shape[0]
@@ -333,7 +326,7 @@ def make_jsma(sess, env, X_data, epochs=2000, eps=5000, batch_size=128):
     return X_adv
 
 
-def make_deepfool(sess, env, X_data, epochs=4, batch_size=1, noise=True, batch=True, eta=5000):
+def make_deepfool(sess, env, X_data, epochs=4, batch_size=1, noise=True, batch=True, eta=10):
     print('\nMaking adversarials via DeepFool')
 
     n_sample = X_data.shape[0]
@@ -351,7 +344,7 @@ def make_deepfool(sess, env, X_data, epochs=4, batch_size=1, noise=True, batch=T
 
     return X_adv
 
-def make_cw(sess, env, X_data, epochs=2000, eps=5000, batch_size=1):
+def make_cw(sess, env, X_data, epochs=4, eps=10, batch_size=1):
     """
     Generate adversarial via CW optimization.
     """
@@ -376,7 +369,7 @@ def make_cw(sess, env, X_data, epochs=2000, eps=5000, batch_size=1):
 
     return X_adv
 
-def pgd_func(image, eps=5000, epochs=2000):
+def pgd_func(image, eps=10, epochs=4):
 
     print('\nMaking adversarials via PGD')
     backup = image
@@ -393,48 +386,133 @@ def pgd_func(image, eps=5000, epochs=2000):
 
 print('\nTraining')
 
-train(sess, env, X_train, y_train, load=False, epochs=5,
+train(sess, env, X_train, y_train, load=False, epochs=4,
       name='biometric')
 
-X_adv_fgsm = np.zeros(X_test.shape)
-X_adv_jsma = np.zeros(X_test.shape)
-X_adv_deepfool = np.zeros(X_test.shape)
-X_adv_cw = np.zeros(X_test.shape)
-X_adv_pgd = np.zeros(X_test.shape)
+for i in range(len(X_train)):
 
-for i in range(200):
+    if (i >= 0) and (i < 9):
 
-    xorg_ini, y0 = X_test[i], y_test[i]
+        xorg_ini, y0 = X_train[i], y_train[i]
 
-    xorg = np.expand_dims(xorg_ini, axis=0)
+        xorg = np.expand_dims(xorg_ini, axis=0)
 
-    xadvs = [make_fgsm(sess, env, xorg, eps=5000, epochs=2000),
-             make_jsma(sess, env, xorg, eps=5000, epochs=2000),
-             make_deepfool(sess, env, xorg, noise=True, epochs=4),
-             make_cw(sess, env, xorg, eps=5000, epochs=2000)]
+        xadvs = [make_fgsm(sess, env, xorg, eps=0.01, epochs=4),
+                 make_jsma(sess, env, xorg, eps=10, epochs=4),
+                 make_deepfool(sess, env, xorg, noise=True, epochs=4),
+                 make_cw(sess, env, xorg, eps=10, epochs=4)]
 
-    X_adv_fgsm[i] = xadvs[0]
-    X_adv_jsma[i] = xadvs[1]
-    X_adv_deepfool[i] = xadvs[2]
-    X_adv_cw[i] = xadvs[3]
-    X_adv_pgd[i] = np.expand_dims(pgd_func(image=xorg_ini, eps=5000, epochs=2000), axis=0)
+#        X_adv_fgsm = xadvs[0]
+#        X_adv_jsma = xadvs[1]
+#        X_adv_deepfool = xadvs[2]
+#        X_adv_cw = xadvs[3]
+#        X_adv_pgd = np.expand_dims(pgd_func(image=xorg_ini, eps=10, epochs=4), axis=0)
 
-print('\nEvaluating on FGSM adversarial data')
+#        xorg = np.squeeze(xorg)
+#        X_adv_fgsm = np.squeeze(X_adv_fgsm)
+#        X_adv_jsma = np.squeeze(X_adv_jsma)
+#        X_adv_deepfool = np.squeeze(X_adv_deepfool)
+#        X_adv_cw = np.squeeze(X_adv_cw)
+        X_adv_pgd = np.squeeze(X_adv_pgd)
 
-evaluate(sess, env, X_adv_fgsm, y_test)
+#        plt.imshow(xorg)
+#        plt.imsave('/home/shayan/Sample_Adversarial/Original_Fingerprint/X_adv_org_' + str(i) + '.png',xorg)
 
-print('\nEvaluating on JSMA adversarial data')
+#        plt.imshow(X_adv_fgsm)
+#        plt.imsave('/home/shayan/Sample_Adversarial/FGSM_Fingerprint/X_adv_fgsm_' + str(i) + '.png',X_adv_fgsm)
 
-evaluate(sess, env, X_adv_jsma, y_test)
+#        plt.imshow(X_adv_jsma)
+#        plt.imsave('/home/shayan/Sample_Adversarial/JSMA_Fingerprint/X_adv_jsma_' + str(i) + '.png',X_adv_jsma)
 
-print('\nEvaluating on DeepFool adversarial data')
+#        plt.imshow(X_adv_deepfool)
+#        plt.imsave('/home/shayan/Sample_Adversarial/DeepFool_Fingerprint/X_adv_deepfool_' + str(i) + '.png',X_adv_deepfool)
 
-evaluate(sess, env, X_adv_deepfool, y_test)
+#        plt.imshow(X_adv_cw)
+#        plt.imsave('/home/shayan/Sample_Adversarial/CW_Fingerprint/X_adv_cw_' + str(i) + '.png',X_adv_cw)
 
-print('\nEvaluating on CW adversarial data')
+        plt.imshow(X_adv_pgd)
+        plt.imsave('/home/shayan/Sample_Adversarial/PGD_Fingerprint/X_adv_pgd_' + str(i) + '.png',X_adv_pgd)
 
-evaluate(sess, env, X_adv_cw, y_test)
+    elif (i >= 10) and (i < 19):
 
-print('\nEvaluating on PGD adversarial data')
+        xorg_ini, y0 = X_train[i], y_train[i]
 
-evaluate(sess, env, X_adv_pgd, y_test)
+        xorg = np.expand_dims(xorg_ini, axis=0)
+
+        xadvs = [make_fgsm(sess, env, xorg, eps=0.01, epochs=4),
+                 make_jsma(sess, env, xorg, eps=10, epochs=4),
+                 make_deepfool(sess, env, xorg, noise=True, epochs=4),
+                 make_cw(sess, env, xorg, eps=10, epochs=4)]
+
+        X_adv_fgsm = xadvs[0]
+        X_adv_jsma = xadvs[1]
+        X_adv_deepfool = xadvs[2]
+        X_adv_cw = xadvs[3]
+        X_adv_pgd = np.expand_dims(pgd_func(image=xorg_ini, eps=10, epochs=4), axis=0)
+
+        xorg = np.squeeze(xorg)
+        X_adv_fgsm = np.squeeze(X_adv_fgsm)
+        X_adv_jsma = np.squeeze(X_adv_jsma)
+        X_adv_deepfool = np.squeeze(X_adv_deepfool)
+        X_adv_cw = np.squeeze(X_adv_cw)
+        X_adv_pgd = np.squeeze(X_adv_pgd)
+
+#        plt.imshow(xorg)
+#        plt.imsave('/home/shayan/Sample_Adversarial/Original_Pill/X_adv_org_' + str(i) + '.png', xorg)
+
+#        plt.imshow(X_adv_fgsm)
+#        plt.imsave('/home/shayan/Sample_Adversarial/FGSM_Pill/X_adv_fgsm_' + str(i) + '.png', X_adv_fgsm)
+
+#        plt.imshow(X_adv_jsma)
+#        plt.imsave('/home/shayan/Sample_Adversarial/JSMA_Pill/X_adv_jsma_' + str(i) + '.png', X_adv_jsma)
+
+#        plt.imshow(X_adv_deepfool)
+#        plt.imsave('/home/shayan/Sample_Adversarial/DeepFool_Pill/X_adv_deepfool_' + str(i) + '.png', X_adv_deepfool)
+
+#        plt.imshow(X_adv_cw)
+#        plt.imsave('/home/shayan/Sample_Adversarial/CW_Pill/X_adv_cw_' + str(i) + '.png', X_adv_cw)
+
+        plt.imshow(X_adv_pgd)
+        plt.imsave('/home/shayan/Sample_Adversarial/PGD_Pill/X_adv_pgd_' + str(i) + '.png', X_adv_pgd)
+
+    else:
+
+        xorg_ini, y0 = X_train[i], y_train[i]
+
+        xorg = np.expand_dims(xorg_ini, axis=0)
+
+        xadvs = [make_fgsm(sess, env, xorg, eps=0.01, epochs=4),
+                 make_jsma(sess, env, xorg, eps=10, epochs=4),
+                 make_deepfool(sess, env, xorg, noise=True, epochs=4),
+                 make_cw(sess, env, xorg, eps=10, epochs=4)]
+
+        X_adv_fgsm = xadvs[0]
+        X_adv_jsma = xadvs[1]
+        X_adv_deepfool = xadvs[2]
+        X_adv_cw = xadvs[3]
+        X_adv_pgd = np.expand_dims(pgd_func(image=xorg_ini, eps=1, epochs=4), axis=0)
+
+        xorg = np.squeeze(xorg)
+        X_adv_fgsm = np.squeeze(X_adv_fgsm)
+        X_adv_jsma = np.squeeze(X_adv_jsma)
+        X_adv_deepfool = np.squeeze(X_adv_deepfool)
+        X_adv_cw = np.squeeze(X_adv_cw)
+        X_adv_pgd = np.squeeze(X_adv_pgd)
+
+#        plt.imshow(xorg)
+#        plt.imsave('/home/shayan/Sample_Adversarial/Original_Iris/X_adv_org_' + str(i) + '.png', xorg)
+
+#        plt.imshow(X_adv_fgsm)
+#        plt.imsave('/home/shayan/Sample_Adversarial/FGSM_Iris/X_adv_fgsm_' + str(i) + '.png', X_adv_fgsm)
+
+#        plt.imshow(X_adv_jsma)
+#        plt.imsave('/home/shayan/Sample_Adversarial/JSMA_Iris/X_adv_jsma_' + str(i) + '.png', X_adv_jsma)
+
+#        plt.imshow(X_adv_deepfool)
+#        plt.imsave('/home/shayan/Sample_Adversarial/DeepFool_Iris/X_adv_deepfool_' + str(i) + '.png', X_adv_deepfool)
+
+#        plt.imshow(X_adv_cw)
+#        plt.imsave('/home/shayan/Sample_Adversarial/CW_Iris/X_adv_cw_' + str(i) + '.png', X_adv_cw)
+
+        plt.imshow(X_adv_pgd)
+        plt.imsave('/home/shayan/Sample_Adversarial/PGD_Iris/X_adv_pgd_' + str(i) + '.png', X_adv_pgd)
